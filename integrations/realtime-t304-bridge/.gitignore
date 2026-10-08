@@ -1,0 +1,10 @@
+/bin/
+/obj/
+/vendor/*.dll
+/logs/*
+!/logs/.gitkeep
+/queue/*
+!/queue/.gitkeep
+*.local.config
+*.user
+*.lock

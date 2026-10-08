@@ -1,0 +1,32 @@
+{
+  "name": "srps-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --env-file=.env src/server.js",
+    "start": "node --env-file=.env src/server.js",
+    "seed": "node --env-file=.env src/enrich-dev-staff.js",
+    "enrich:dev-staff": "node --env-file=.env src/enrich-dev-staff.js",
+    "import:handwritten": "node --env-file=.env src/import-handwritten.js",
+    "test": "node --test test/*.test.js",
+    "test:integration": "node --env-file=.env test/integration.mjs",
+    "test:features": "node test/features.mjs",
+    "test:face": "node test/face-attendance.mjs",
+    "test:fkweb": "node test/fkweb.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.0.0",
+    "exceljs": "^4.4.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.0.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.0",
+    "mongoose": "^8.19.0",
+    "node-cron": "^4.0.0",
+    "nodemailer": "^10.0.14",
+    "qrcode": "^1.5.4",
+    "zod": "^4.0.0"
+  }
+}

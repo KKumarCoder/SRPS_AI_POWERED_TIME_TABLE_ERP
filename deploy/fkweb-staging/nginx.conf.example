@@ -1,0 +1,25 @@
+# Dedicated staging vhost; replace STAGING_HOST and certificate paths.
+# Existing ERP virtual hosts stay unchanged. No token appears in this file.
+server {
+    listen 443 ssl;
+    server_name STAGING_HOST;
+    ssl_certificate /etc/letsencrypt/live/STAGING_HOST/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/STAGING_HOST/privkey.pem;
+    access_log off;
+    error_log /dev/null crit;
+    location /biometric/fkweb/ {
+        # Optional additional school egress restriction (public IP, NOT device LAN IP):
+        # allow SCHOOL_PUBLIC_EGRESS_IP;
+        # deny all;
+        client_max_body_size 1m;
+        client_body_timeout 10s;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_pass http://127.0.0.1:4100;
+        proxy_read_timeout 20s;
+    }
+    location / { return 404; }
+}

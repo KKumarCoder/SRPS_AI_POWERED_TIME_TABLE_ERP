@@ -1,0 +1,8 @@
+node_modules/
+.env
+client/dist/
+.data/
+*.log
+
+*.capture
+*.private.env

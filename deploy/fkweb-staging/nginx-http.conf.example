@@ -1,0 +1,24 @@
+# Optional SHORT-LIVED HTTP diagnostic vhost ONLY if HTTPS fails and risk is accepted.
+# TLS does not protect this first hop: request content and bearer token are visible in transit.
+# Prefer the private LAN/VPN relay in docs/fkweb-http-private.example.conf instead.
+# Replace STAGING_HOST and SCHOOL_PUBLIC_EGRESS_IP. Never use 192.168.1.224 here.
+server {
+    listen 80;
+    server_name STAGING_HOST;
+    access_log off;
+    error_log /dev/null crit;
+    location /biometric/fkweb/ {
+        allow SCHOOL_PUBLIC_EGRESS_IP;
+        deny all;
+        client_max_body_size 1m;
+        client_body_timeout 10s;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_pass http://127.0.0.1:4100;
+        proxy_read_timeout 20s;
+    }
+    location / { return 404; }
+}

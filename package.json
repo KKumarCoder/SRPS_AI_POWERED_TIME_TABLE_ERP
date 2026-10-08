@@ -1,0 +1,24 @@
+{
+  "name": "srps-ai-timetable-erp",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w client",
+    "test": "npm test -w server",
+    "seed": "npm run seed -w server",
+    "enrich:dev-staff": "npm run enrich:dev-staff -w server",
+    "import:handwritten": "npm run import:handwritten -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
+  }
+}

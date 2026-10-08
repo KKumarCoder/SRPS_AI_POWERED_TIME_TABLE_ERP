@@ -1,0 +1,55 @@
+import express from 'express';
+import rateLimit from 'express-rate-limit';
+import crypto from 'node:crypto';
+import {z} from 'zod';
+import {Teacher,Attendance,SchoolSettings,AuditLog} from '../models/index.js';
+import {AttendanceDevice,TeacherDeviceMapping,AttendanceEvent} from './models.js';
+import {eventInput,timestamp,policyInput,istDate,summarizeTimes} from './policy.js';
+import {fail,ingest,identifyDevice,devices,getPolicy,reprocess,daily,monthly} from './service.js';
+const ok=(res,data)=>res.json({success:true,data});
+const id=z.string().regex(/^[a-f\d]{24}$/i);
+const text=z.string().trim().min(1).max(128);
+const manage=(req,res,next)=>['SUPER_ADMIN','PRINCIPAL'].includes(req.user.role)?next():next(fail('Principal or Super Admin access required',403));
+const audit=(req,action,entity,newValue,oldValue)=>AuditLog.create({user:req.user.email,action,entity,entityId:String(newValue?._id||''),newValue,oldValue});
+export const bridgeRoutes=express.Router();
+bridgeRoutes.use(rateLimit({windowMs:60000,limit:600}), (req,res,next)=>{
+ const expected=process.env.ATTENDANCE_BRIDGE_API_KEY,actual=req.get('X-SRPS-Bridge-Key')||'';
+ if(!expected||expected.length<32)return next(fail('Attendance bridge key is not configured',503));
+ const digest=s=>crypto.createHash('sha256').update(s).digest();
+ if(!crypto.timingSafeEqual(digest(expected),digest(actual)))return next(fail('Invalid bridge API key',401));
+ if(Buffer.byteLength(JSON.stringify(req.body||{}))>16384)return next(fail('Attendance payload too large',413));
+ next();
+});
+bridgeRoutes.post('/events',async(req,res)=>{const input=eventInput.parse(req.body);if(input.source==='FKWEB')throw fail('FkWeb protocol is not accepted on the SBXPC bridge endpoint',400);if(!input.bridgeId)throw fail('Bridge ID is required');if(input.isMock&&(process.env.NODE_ENV==='production'||process.env.ATTENDANCE_BRIDGE_MOCK!=='true'))throw fail('Mock attendance is disabled',403);ok(res,await ingest(input));});
+bridgeRoutes.post('/heartbeat',async(req,res)=>{
+ const b=z.object({bridgeId:text,deviceModel:z.literal('Realtime Pro T304 mini'),deviceSerial:text,machineNumber:z.number().int().positive(),connected:z.boolean(),deviceIp:z.union([z.ipv4(),z.literal('')]),lastDeviceEventAt:timestamp.nullable().optional(),pendingQueueCount:z.number().int().min(0),bridgeVersion:text,timestamp}).strict().parse(req.body);
+ const device=await identifyDevice(b);
+ await AttendanceDevice.updateOne({_id:device._id},{$set:{connected:b.connected,ipAddress:b.deviceIp,lastHeartbeatAt:new Date(),pendingQueueCount:b.pendingQueueCount,bridgeVersion:b.bridgeVersion}});
+ ok(res,{accepted:true});
+});
+export const attendanceRoutes=express.Router();
+attendanceRoutes.get('/devices',async(req,res)=>ok(res,await devices()));
+attendanceRoutes.get('/devices/:id/status',async(req,res)=>{const key=id.parse(req.params.id);const device=(await devices()).find(d=>String(d._id)===key);if(!device)throw fail('Device not found',404);ok(res,device);});
+const deviceInput=z.object({name:text,model:z.literal('Realtime Pro T304 mini'),serialNumber:text,machineNumber:z.number().int().min(1).max(65535),bridgeId:text,ipAddress:z.union([z.ipv4(),z.literal('')]).default(''),port:z.number().int().min(1).max(65535),location:z.string().max(200).default(''),active:z.boolean().default(true)}).strict();
+attendanceRoutes.post('/devices',manage,async(req,res)=>{const row=await AttendanceDevice.create(deviceInput.parse(req.body));await audit(req,'CREATE','attendance-device',row);ok(res,row);});
+attendanceRoutes.patch('/devices/:id',manage,async(req,res)=>{const key=id.parse(req.params.id);const b=deviceInput.pick({name:true,ipAddress:true,port:true,location:true,active:true}).partial().parse(req.body);const old=await AttendanceDevice.findById(key);if(!old)throw fail('Device not found',404);const row=await AttendanceDevice.findByIdAndUpdate(key,{$set:b},{new:true,runValidators:true});await audit(req,'UPDATE','attendance-device',row,old);ok(res,row);});
+attendanceRoutes.get('/settings',async(req,res)=>ok(res,await getPolicy()));
+attendanceRoutes.put('/settings',manage,async(req,res)=>{const value=policyInput.parse(req.body),old=await getPolicy();await SchoolSettings.findOneAndUpdate({key:'face-attendance'},{$set:{value}},{upsert:true});await audit(req,'UPDATE','face-attendance-settings',value,old);ok(res,value);});
+attendanceRoutes.get('/mappings',async(req,res)=>ok(res,await TeacherDeviceMapping.find().sort({createdAt:-1}).limit(2000)));
+attendanceRoutes.post('/mappings',manage,async(req,res)=>{const b=z.object({teacherId:id,deviceUserId:z.string().regex(/^\d{1,12}$/).transform(s=>BigInt(s).toString()),deviceSerial:text}).strict().parse(req.body);const teacher=await Teacher.findById(b.teacherId);if(!teacher?.active)throw fail('Active teacher not found',404);if(!await AttendanceDevice.exists({serialNumber:b.deviceSerial,active:true}))throw fail('Active device not found',404);const row=await TeacherDeviceMapping.create({...b,employeeId:teacher.employeeId});await audit(req,'CREATE','teacher-device-mapping',row);ok(res,row);});
+// Historical identities are never rewritten. Disable a mapping, then add a new one for future events.
+attendanceRoutes.patch('/mappings/:id',manage,async(req,res)=>{const key=id.parse(req.params.id),b=z.object({active:z.boolean()}).strict().parse(req.body);const old=await TeacherDeviceMapping.findById(key);if(!old)throw fail('Mapping not found',404);const row=await TeacherDeviceMapping.findByIdAndUpdate(key,{$set:b},{new:true});await audit(req,'UPDATE','teacher-device-mapping',row,old);ok(res,row);});
+attendanceRoutes.post('/mappings/:id/reprocess',manage,async(req,res)=>{const mapping=await TeacherDeviceMapping.findOne({_id:id.parse(req.params.id),active:true});if(!mapping)throw fail('Active mapping not found',404);const {after}=z.object({after:id.optional()}).parse(req.body||{});const result=await reprocess(mapping,after);await audit(req,'REPROCESS','teacher-device-mapping',{_id:mapping._id,...result});ok(res,result);});
+attendanceRoutes.get('/live',async(req,res)=>{const q=z.object({before:timestamp.optional(),teacherId:id.optional()}).parse(req.query);ok(res,await AttendanceEvent.find({...q.teacherId&&{teacherId:q.teacherId},...q.before&&{eventTimestamp:{$lt:new Date(q.before)}}}).sort({eventTimestamp:-1,_id:-1}).limit(100));});
+attendanceRoutes.get('/unmapped',async(req,res)=>ok(res,await AttendanceEvent.aggregate([{$match:{processingStatus:'UNMAPPED'}},{$group:{_id:{deviceSerial:'$deviceSerial',deviceUserId:'$deviceUserId'},firstSeen:{$min:'$eventTimestamp'},lastSeen:{$max:'$eventTimestamp'},eventCount:{$sum:1}}},{$sort:{lastSeen:-1}},{$limit:500}])));
+attendanceRoutes.get('/daily',async(req,res)=>{const q=z.object({date:z.iso.date().default(istDate(new Date())),teacherId:id.optional()}).parse(req.query);ok(res,await daily(q.date,q.teacherId));});
+attendanceRoutes.get('/monthly',async(req,res)=>{const q=z.object({month:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),teacherId:id.optional()}).parse(req.query);ok(res,await monthly(q.month,q.teacherId));});
+attendanceRoutes.post('/adjustments',manage,async(req,res)=>{
+ const b=z.object({teacherId:id,date:z.iso.date(),status:z.enum(['PRESENT','ABSENT','LATE','LEAVE','HALF_DAY','NOT_MARKED']),adjustmentReason:z.string().trim().min(3).max(1000),checkInTime:timestamp.nullable(),checkOutTime:timestamp.nullable()}).strict().parse(req.body);
+ if(!await Teacher.exists({_id:b.teacherId}))throw fail('Teacher not found',404);
+ for(const value of [b.checkInTime,b.checkOutTime])if(value&&istDate(value)!==b.date)throw fail('Adjusted times must belong to the selected school date');
+ if(b.checkOutTime&&(!b.checkInTime||Date.parse(b.checkOutTime)<Date.parse(b.checkInTime)))throw fail('Check-out must follow check-in');
+ const old=await Attendance.findOne({teacherId:b.teacherId,date:b.date});
+ const timing=b.checkInTime?summarizeTimes(b.date,b.checkInTime,b.checkOutTime,await getPolicy()):{lateMinutes:0,workingMinutes:0,earlyLeaveMinutes:0,checkoutMissing:false};
+ const row=await Attendance.findOneAndUpdate({teacherId:b.teacherId,date:b.date},{$set:{...timing,...b,manualOverride:true,manuallyAdjusted:true,overrideReason:b.adjustmentReason,adjustedBy:req.user.email,updatedBy:req.user.email,adjustedAt:new Date(),checkInMethod:'ADMIN_OVERRIDE'}},{upsert:true,new:true,runValidators:true});await audit(req,'MANUAL_ADJUSTMENT','attendance',row,old);ok(res,row);
+});

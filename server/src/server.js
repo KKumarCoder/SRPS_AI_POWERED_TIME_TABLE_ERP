@@ -1,0 +1,13 @@
+import {startCaptureCleanup} from './attendance/fkweb/receiver.js';
+import {attendanceModels} from './attendance/models.js';
+import mongoose from 'mongoose';
+import cron from 'node-cron';
+import {app} from './app.js';
+import {Teacher} from './models/index.js';
+import {emailQR} from './services/qr.js';
+for(const key of ['JWT_SECRET','QR_SIGNING_SECRET'])if(!process.env[key]||process.env[key].length<32||process.env[key].startsWith('replace-'))throw Error(`Set a strong ${key}`);
+await mongoose.connect(process.env.MONGODB_URI);
+await Promise.all(attendanceModels.map(model=>model.init()));
+startCaptureCleanup();
+if(process.env.EMAIL_SENDING_ENABLED==='true')cron.schedule(process.env.DAILY_QR_EMAIL_CRON||'0 6 * * *',async()=>{for(const t of await Teacher.find({active:true,attendanceEnabled:true,qrAttendanceEnabled:true})){try{await emailQR(t.id);}catch(e){console.error(`QR email ${t.employeeId}: ${e.message}`);}}},{timezone:process.env.SCHOOL_TIMEZONE||'Asia/Kolkata',noOverlap:true});
+app.listen(process.env.PORT||4000,'127.0.0.1',()=>console.log(`SRPS API listening on http://127.0.0.1:${process.env.PORT||4000}`));

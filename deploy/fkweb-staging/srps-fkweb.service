@@ -1,0 +1,24 @@
+[Unit]
+Description=SRPS staging FkWeb diagnostic receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=srps-fkweb
+Group=srps-fkweb
+WorkingDirectory=/opt/srps/SRPS_AI_POWERED_TIME_TABLE_ERP/server
+ExecStart=/usr/bin/node --env-file=/etc/srps/fkweb-staging.env src/server.js
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/srps-fkweb/captures
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
